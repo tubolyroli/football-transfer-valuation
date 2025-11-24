@@ -4,3 +4,5 @@ beautifulsoup4==4.12.3
 scikit-learn==1.6.1
 great_expectations==1.9.1
 jupyter==1.1.1
+streamlit==1.45.1
+plotly==5.24.1
