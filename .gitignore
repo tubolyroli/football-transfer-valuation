@@ -1,0 +1,26 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Caches
+.ipynb_checkpoints
+.pytest_cache/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Data (Never commit large datasets)
+data/
+*.csv
+*.xlsx
+*.db
+*.sqlite3
+
+# IDE settings
+.vscode/
+.idea/
