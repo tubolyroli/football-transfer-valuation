@@ -1,5 +1,9 @@
 # Football Transfer Market Valuation
 
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://football-transfer-valuation.streamlit.app)
+
+🔗 **Live demo:** https://football-transfer-valuation.streamlit.app
+
 An end-to-end data science pipeline that estimates the "fair market value" of European
 footballers by combining performance stats (FBref) with market valuations
 (Transfermarkt), then surfaces under-/over-valued players via an interactive dashboard.
