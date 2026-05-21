@@ -15,11 +15,14 @@ venv/
 ENV/
 
 # Data (Never commit large datasets)
-data/
-*.csv
+data/**
 *.xlsx
 *.db
 *.sqlite3
+
+# ...except the small processed master table, so the deployed app has data
+!data/processed/
+!data/processed/final_dataset.csv
 
 # IDE settings
 .vscode/
