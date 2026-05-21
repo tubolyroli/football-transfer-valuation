@@ -1,60 +1,81 @@
+"""Data-quality validation for the merged dataset.
+
+Runs Great Expectations checks against data/processed/final_dataset.csv and
+exits non-zero if any expectation fails, so it can gate a CI pipeline.
+"""
+
+import sys
 import pandas as pd
 import great_expectations as gx
 
-# 1. Simulate "Dirty" Scraped Data
-data = {
-    'player_id': [101, 102, 103, 101, 105],  # Error: Duplicate ID (101)
-    'player_name': ['Szoboszlai Dominik', 'Phil Foden', 'Harry Kane', 'Szoboszlai Dominik', 'Unknown Player'],
-    'age': [24, 23, 30, 24, 150],            # Error: Age 150 is impossible
-    'market_value_eur': [75000000, 110000000, 90000000, 75000000, -5000], # Error: Negative value
-    'league': ['Premier League', 'Premier League', 'Bundesliga', 'Premier League', None] # Error: Null league
+DATA_PATH = "data/processed/final_dataset.csv"
+
+EXPECTED_LEAGUES = {
+    "eng Premier League",
+    "es La Liga",
+    "de Bundesliga",
+    "it Serie A",
+    "fr Ligue 1",
 }
 
-# Create DataFrame (simulate loading from CSV)
-df = pd.DataFrame(data)
 
-print("--- RAW DATA SNAPSHOT ---")
-print(df)
-print("\n--- STARTING VALIDATION ---")
+def load_dataset():
+    df = pd.read_csv(DATA_PATH)
+    # FBref encodes age as "23-054"; keep just the year part for validation.
+    df["age_years"] = df["age"].astype(str).str.split("-").str[0].astype(int)
+    return df
 
-# 2. Initialize Great Expectations Context
-context = gx.get_context()
 
-# 3. Create a Validator Object linked to the DataFrame
-datasource = context.sources.add_pandas(name="football_data_source")
-asset = datasource.add_dataframe_asset(name="players", dataframe=df)
-batch_request = asset.build_batch_request()
-validator = context.get_validator(batch_request=batch_request, expectation_suite_name="transfer_market_checks")
+def build_validator(df):
+    context = gx.get_context()
+    data_source = context.data_sources.add_pandas(name="football_valuation")
+    asset = data_source.add_dataframe_asset(name="final_dataset")
+    batch_definition = asset.add_batch_definition_whole_dataframe("all")
+    batch = batch_definition.get_batch(batch_parameters={"dataframe": df})
+    return batch
 
-# 4. Define Your "Expectations" (The Rules)
 
-# Rule A: Player IDs must be unique
-validator.expect_column_values_to_be_unique(column="player_id")
+def run_checks(batch):
+    expectations = [
+        gx.expectations.ExpectColumnValuesToNotBeNull(column="player_name"),
+        gx.expectations.ExpectColumnValuesToNotBeNull(column="value_eur"),
+        gx.expectations.ExpectColumnValuesToBeBetween(
+            column="value_eur", min_value=0, max_value=300_000_000
+        ),
+        gx.expectations.ExpectColumnValuesToBeBetween(
+            column="age_years", min_value=15, max_value=45
+        ),
+        gx.expectations.ExpectColumnValuesToBeInSet(
+            column="league", value_set=list(EXPECTED_LEAGUES)
+        ),
+        gx.expectations.ExpectColumnValuesToBeUnique(column="name_key"),
+    ]
 
-# Rule B: Age must be realistic (e.g., between 15 and 45)
-validator.expect_column_values_to_be_between(column="age", min_value=15, max_value=45)
+    failed = []
+    for exp in expectations:
+        result = batch.validate(exp)
+        status = "PASS" if result.success else "FAIL"
+        print(f"[{status}] {exp.__class__.__name__} on {exp.column}")
+        if not result.success:
+            unexpected = result.result.get("unexpected_count", "?")
+            print(f"        Unexpected count: {unexpected}")
+            failed.append(exp.__class__.__name__)
+    return failed
 
-# Rule C: Market Value cannot be missing and must be positive
-validator.expect_column_values_to_not_be_null(column="market_value_eur")
-validator.expect_column_values_to_be_between(column="market_value_eur", min_value=0, max_value=300000000)
 
-# Rule D: League must be one of the specific set we track
-validator.expect_column_values_to_be_in_set(
-    column="league", 
-    value_set=["Premier League", "Bundesliga", "La Liga", "Serie A", "Ligue 1", "NB I"]
-)
+def main():
+    print(f"[INFO] Validating {DATA_PATH}...")
+    df = load_dataset()
+    print(f"[INFO] Loaded {len(df)} rows.")
 
-# 5. Run Validation and Save Results
-results = validator.validate()
+    batch = build_validator(df)
+    failed = run_checks(batch)
 
-# 6. Output for the User
-if not results["success"]:
-    print("\n[CRITICAL] Data Quality Checks FAILED!")
-    print(f"Success Score: {results['statistics']['success_percent']}%")
-    # Loop through results to show exactly what failed
-    for res in results["results"]:
-        if not res["success"]:
-            print(f"FAILED CHECK: {res['expectation_config']['expectation_type']} on column {res['expectation_config']['kwargs']['column']}")
-            print(f"   Details: Found {res['result']['unexpected_count']} errors.")
-else:
-    print("\n[SUCCESS] All Data Quality Checks Passed. Ready for Pipeline.")
+    if failed:
+        print(f"\n[CRITICAL] {len(failed)} expectation(s) failed: {failed}")
+        sys.exit(1)
+    print("\n[SUCCESS] All data quality checks passed.")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,95 +1,209 @@
-import streamlit as st
+import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import Ridge
+from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-# --- Page Config ---
+NUMERIC_FEATURES = [
+    "age_clean", "goals", "assists", "xg", "Expected_xAG",
+    "Progression_PrgC", "Playing Time_Min",
+]
+CATEGORICAL_FEATURES = ["position_primary", "league"]
+TARGET = "value_eur"
+
 st.set_page_config(page_title="Football Transfer Valuation", page_icon="⚽", layout="wide")
 
-# --- 1. Load & Cache Data ---
+
 @st.cache_data
 def load_data():
     df = pd.read_csv("data/processed/final_dataset.csv")
-    # Clean Age
-    df['age_clean'] = df['age'].str.split('-').str[0].astype(int)
+    df["age_clean"] = df["age"].astype(str).str.split("-").str[0].astype(int)
+    df["position_primary"] = df["position"].astype(str).str.split(",").str[0]
+    df["log_value"] = np.log1p(df[TARGET])
     return df
+
+
+def build_pipeline():
+    pre = ColumnTransformer(
+        transformers=[
+            ("num", StandardScaler(), NUMERIC_FEATURES),
+            ("cat", OneHotEncoder(handle_unknown="ignore"), CATEGORICAL_FEATURES),
+        ]
+    )
+    return Pipeline([("pre", pre), ("model", Ridge(alpha=1.0))])
+
+
+@st.cache_data
+def train_and_predict(df: pd.DataFrame):
+    X = df[NUMERIC_FEATURES + CATEGORICAL_FEATURES]
+    y_log = df["log_value"]
+    y_raw = df[TARGET]
+
+    X_train, X_test, y_train_log, _, _, y_test_raw = train_test_split(
+        X, y_log, y_raw, test_size=0.2, random_state=42
+    )
+
+    pipe = build_pipeline()
+    pipe.fit(X_train, y_train_log)
+
+    test_pred = np.expm1(pipe.predict(X_test))
+    r2 = r2_score(y_test_raw, test_pred)
+    mae = mean_absolute_error(y_test_raw, test_pred)
+
+    df = df.copy()
+    df["predicted_value"] = np.expm1(pipe.predict(X))
+    df["difference"] = df["predicted_value"] - df[TARGET]
+    df["residual"] = df[TARGET] - df["predicted_value"]
+    df["is_test"] = df.index.isin(X_test.index)
+
+    # Feature importance: standardized coefficients from the linear model.
+    ohe = pipe.named_steps["pre"].named_transformers_["cat"]
+    feature_names = list(NUMERIC_FEATURES) + list(ohe.get_feature_names_out(CATEGORICAL_FEATURES))
+    coefs = pipe.named_steps["model"].coef_
+    importance = pd.DataFrame({"feature": feature_names, "coefficient": coefs})
+    importance["abs"] = importance["coefficient"].abs()
+    importance = importance.sort_values("abs", ascending=True)
+
+    return df, r2, mae, importance
+
 
 df = load_data()
 
-# --- 2. Sidebar Filters ---
+# Sidebar filters
 st.sidebar.header("Filter Players")
 selected_leagues = st.sidebar.multiselect(
-    "Select Leagues", 
-    options=df['league'].unique(), 
-    default=df['league'].unique()
+    "Leagues",
+    options=sorted(df["league"].dropna().unique()),
+    default=sorted(df["league"].dropna().unique()),
 )
 min_minutes = st.sidebar.slider("Minimum Minutes Played", 0, 3000, 500)
 
-# Filter the dataframe
-df_filtered = df[
-    (df['league'].isin(selected_leagues)) & 
-    (df['Playing Time_Min'] >= min_minutes)
-]
+df_view = df[
+    (df["league"].isin(selected_leagues)) & (df["Playing Time_Min"] >= min_minutes)
+].copy()
 
-# --- 3. Train Model (On the Fly) ---
-features = ['age_clean', 'goals', 'assists', 'xg', 'Progression_PrgC']
-target = 'value_eur'
+if len(df_view) < 20:
+    st.warning("Not enough players match the filters to train a model. Loosen the filters.")
+    st.stop()
 
-X = df_filtered[features]
-y = df_filtered[target]
+scored, r2, mae, importance = train_and_predict(df_view)
 
-# Train
-model = Ridge(alpha=1.0)
-model.fit(X, y)
-df_filtered['predicted_value'] = model.predict(X)
-df_filtered['difference'] = df_filtered['predicted_value'] - df_filtered['value_eur']
-
-# Metrics
-r2 = model.score(X, y)
-
-# --- 4. Dashboard Layout ---
+# Header + headline metrics
 st.title("⚽ Football Transfer Valuation Model")
-st.markdown("""
-This tool uses **Machine Learning (Ridge Regression)** to estimate the 'Fair Market Value' of players based on their performance stats (Goals, xG, Progression).
-Any positive difference suggests the player might be **Undervalued** (a bargain).
-""")
-
-# Top Level Metrics
-col1, col2, col3 = st.columns(3)
-col1.metric("Players Analyzed", len(df_filtered))
-col2.metric("Model Accuracy (R²)", f"{r2:.2%}")
-col3.metric("Market Inefficiency Found", f"€{df_filtered['difference'].sum():,.0f}")
-
-# --- 5. Visualizations ---
-st.subheader("💰 Actual Market Value vs. Model Prediction")
-fig = px.scatter(
-    df_filtered, 
-    x='value_eur', 
-    y='predicted_value', 
-    hover_data=['player_name', 'age', 'team'],
-    color='difference',
-    color_continuous_scale='RdBu',
-    labels={'value_eur': 'Actual Market Value (€)', 'predicted_value': 'Model Predicted Value (€)'},
-    title="Players above the diagonal are Undervalued (Blue)"
-)
-# Add a diagonal line (Perfect prediction)
-fig.add_shape(type="line", x0=0, y0=0, x1=150000000, y1=150000000, line=dict(color="Green", dash="dash"))
-st.plotly_chart(fig, use_container_width=True)
-
-# --- 6. The "Bargain Bin" Table ---
-st.subheader("💎 Top 10 Undervalued Players")
-undervalued = df_filtered.sort_values(by='difference', ascending=False).head(10)
-st.dataframe(
-    undervalued[['player_name', 'age', 'team', 'value_eur', 'predicted_value', 'difference']]
-    .style.format({'value_eur': '€{:,.0f}', 'predicted_value': '€{:,.0f}', 'difference': '€{:,.0f}'})
+st.markdown(
+    "Ridge regression on FBref performance stats + position + league predicts "
+    "**log(market value)**. Positive *difference* = the model thinks the player is **undervalued**."
 )
 
-# --- 7. Explainability ---
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Players", len(scored))
+col2.metric("Held-out R²", f"{r2:.2%}")
+col3.metric("Held-out MAE", f"€{mae:,.0f}")
+col4.metric("Top League by N", scored["league"].value_counts().idxmax())
+
+tab1, tab2, tab3, tab4 = st.tabs(
+    ["📊 Predicted vs Actual", "📉 Residuals", "🏆 League Premium", "🔬 Feature Importance"]
+)
+
+with tab1:
+    st.subheader("Actual vs. Predicted Market Value")
+    fig = px.scatter(
+        scored, x="value_eur", y="predicted_value",
+        hover_data=["player_name", "age", "team", "league"],
+        color="difference", color_continuous_scale="RdBu",
+        labels={"value_eur": "Actual (€)", "predicted_value": "Predicted (€)"},
+    )
+    max_val = float(scored[["value_eur", "predicted_value"]].max().max())
+    fig.add_shape(type="line", x0=0, y0=0, x1=max_val, y1=max_val,
+                  line=dict(color="green", dash="dash"))
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("💎 Top 10 Undervalued (Out-of-Sample Only)")
+    undervalued = scored[scored["is_test"]].sort_values("difference", ascending=False).head(10)
+    st.dataframe(
+        undervalued[["player_name", "age", "team", "league",
+                     "value_eur", "predicted_value", "difference"]]
+        .style.format({"value_eur": "€{:,.0f}",
+                       "predicted_value": "€{:,.0f}",
+                       "difference": "€{:,.0f}"})
+    )
+
+with tab2:
+    st.subheader("Residual Plot")
+    st.caption(
+        "Residual = Actual − Predicted. Random scatter around zero means the model is well-specified. "
+        "Patterns (e.g., funnel shape) reveal heteroscedasticity or missing features."
+    )
+    fig = px.scatter(
+        scored, x="predicted_value", y="residual",
+        hover_data=["player_name", "league"],
+        color="league",
+        labels={"predicted_value": "Predicted (€)", "residual": "Residual (€)"},
+    )
+    fig.add_hline(y=0, line_dash="dash", line_color="black")
+    st.plotly_chart(fig, use_container_width=True)
+
+with tab3:
+    st.subheader("League Price Premium")
+    st.caption(
+        "For each league: median % difference between actual market value and the model's prediction. "
+        "Positive = league players are priced *above* what their stats predict (the 'tax')."
+    )
+    league_summary = (
+        scored.assign(premium_pct=(scored[TARGET] / scored["predicted_value"] - 1) * 100)
+        .groupby("league")
+        .agg(
+            n=("player_name", "size"),
+            median_value=(TARGET, "median"),
+            median_predicted=("predicted_value", "median"),
+            median_premium_pct=("premium_pct", "median"),
+        )
+        .sort_values("median_premium_pct", ascending=False)
+        .reset_index()
+    )
+    fig = px.bar(
+        league_summary, x="league", y="median_premium_pct",
+        color="median_premium_pct", color_continuous_scale="RdBu_r",
+        labels={"median_premium_pct": "Median premium (%)"},
+        title="Are league players priced above or below their stats?",
+    )
+    fig.add_hline(y=0, line_dash="dash", line_color="black")
+    st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(
+        league_summary.style.format({
+            "median_value": "€{:,.0f}",
+            "median_predicted": "€{:,.0f}",
+            "median_premium_pct": "{:.1f}%",
+        })
+    )
+
+with tab4:
+    st.subheader("Standardized Ridge Coefficients")
+    st.caption(
+        "Numeric features are standardized before fitting, so coefficient magnitudes are directly comparable. "
+        "Categorical (league/position) coefficients are relative to the implicit baseline category."
+    )
+    fig = go.Figure(go.Bar(
+        x=importance["coefficient"], y=importance["feature"],
+        orientation="h",
+        marker=dict(color=importance["coefficient"], colorscale="RdBu", cmid=0),
+    ))
+    fig.update_layout(height=600, xaxis_title="Coefficient (log-€ units)")
+    st.plotly_chart(fig, use_container_width=True)
+
 st.markdown("### 📝 Methodology")
-st.markdown(f"""
-* **Data Source:** FBref (Performance) & Transfermarkt (Price).
-* **Features Used:** Age, Goals, Assists, Expected Goals (xG), Progressive Carries.
-* **Limitations:** The model currently does not account for contract length or commercial value (e.g., shirt sales).
-""")
+st.markdown(
+    f"""
+- **Target:** `log1p(value_eur)` — raw market value is right-skewed (raw skew ≈ 2.6, log ≈ 1.1).
+- **Numeric features:** {', '.join(NUMERIC_FEATURES)} (standardized).
+- **Categorical features:** {', '.join(CATEGORICAL_FEATURES)} (one-hot encoded).
+- **Validation:** 80/20 train/test split, fixed `random_state=42`. R² and MAE reported on the held-out 20% only.
+- **Limitations:** No contract length, no commercial/marketing value, no transfermarkt-specific market sentiment. Sample is the top-500 most valuable players only — selection bias toward expensive players.
+"""
+)

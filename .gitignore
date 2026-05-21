@@ -24,3 +24,8 @@ data/
 # IDE settings
 .vscode/
 .idea/
+
+# OS
+.DS_Store
+**/.DS_Store
+Thumbs.db
