@@ -35,3 +35,8 @@ Thumbs.db
 
 # Claude Code
 CLAUDE.md
+
+.Rhistory
+practice_rebuild.ipynb
+practice_rebuild.py
+practice_rebuild_scratch.ipynb
