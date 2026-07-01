@@ -31,6 +31,12 @@ footballers by combining performance stats (FBref) with market valuations
 Ridge wins on this small, high-noise dataset — exactly the kind of regime where
 high-variance tree ensembles overfit.
 
+## Model Card
+
+Ridge MAE vs. Baseline (predicting mean always) MAE: €14.98M vs. €17.57M
+This means the model is expected to be off by ~€15M on average,
+which is a large error in absolute terms but an improvement over the naive baseline.
+
 ## Project Structure
 ```
 src/
