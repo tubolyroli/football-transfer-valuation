@@ -14,29 +14,40 @@ footballers by combining performance stats (FBref) with market valuations
   normalization (Vinícius Júnior ↔ Vinicius Junior), reproducible pipeline.
 * **Data quality:** Automated Great Expectations checks that gate the pipeline.
 * **Modeling:** Ridge regression on log-transformed prices with categorical encoding;
-  three model leaderboard (Ridge / RandomForest / GradientBoosting) with held-out and
-  5-fold cross-validated R².
-* **Analysis:** Quantifies the league-level price premium ("Premier League Tax") via
-  the model's standardized coefficients.
-* **Communication:** EDA notebook with the story, plus a four-tab Streamlit dashboard
-  (predictions, residuals, league premium, feature importance).
-* **Testing:** 17 pytest tests on the cleaning utilities + pipeline output.
+  hyperparameters selected by 5-fold `GridSearchCV` on the training split only; three
+  model leaderboard (Ridge / RandomForest / GradientBoosting) scored on a held-out test set.
+* **Honest evaluation:** All player rankings use out-of-fold predictions
+  (`cross_val_predict`) — no player is scored by a model that saw them in training.
+* **Analysis:** Quantifies league-level price premia (is there a "Premier League Tax"?)
+  via out-of-fold residuals and the model's standardized coefficients.
+* **Communication:** EDA + modeling notebooks with the story, plus a four-tab Streamlit
+  dashboard (predictions, residuals, league premium, feature importance).
+* **Testing & CI:** 17 pytest tests on the cleaning utilities + pipeline output;
+  GitHub Actions runs the suite and the Great Expectations gate on every push.
 
 ## Results (top-500 most-valuable players, 405 matched)
-| Model            | Held-out R² | Held-out MAE | 5-fold CV R² (log) |
-|------------------|-------------|--------------|--------------------|
-| **Ridge**        | **0.25**    | **€14.9M**   | **0.16 ± 0.03**    |
-| RandomForest     | 0.05        | €15.4M       | 0.09 ± 0.05        |
-| GradientBoosting | -0.05       | €16.1M       | 0.08 ± 0.04        |
 
-Ridge wins on this small, high-noise dataset — exactly the kind of regime where
-high-variance tree ensembles overfit.
+All hyperparameters tuned with 5-fold `GridSearchCV` on the training split; test metrics
+come from the untouched 20% hold-out.
+
+| Model            | Best params (grid-searched)       | Held-out R² | Held-out MAE | CV R² (log, train) |
+|------------------|-----------------------------------|-------------|--------------|--------------------|
+| **Ridge**        | **alpha = 31.6**                  | **0.25**    | **€14.8M**   | **0.19 ± 0.12**    |
+| RandomForest     | depth 5, sqrt features            | 0.08        | €15.1M       | 0.17 ± 0.11        |
+| GradientBoosting | lr 0.01, depth 2, 300 trees       | 0.04        | €15.4M       | 0.17 ± 0.10        |
+
+Two things worth noticing: cross-validation pushed Ridge's alpha from the default 1.0 to
+**31.6** (at n=405, variance is the dominant error source, so heavy shrinkage wins), and
+both tree ensembles chose their most *conservative* grid corner — yet still lose. This is
+the bias-variance trade-off made empirical: a linear inductive bias matches the weak,
+roughly linear signal better than trees hunting for interactions 324 training rows can't
+support.
 
 ## Model Card
 
-Ridge MAE vs. Baseline (predicting mean always) MAE: €14.98M vs. €17.57M
-This means the model is expected to be off by ~€15M on average,
-which is a large error in absolute terms but an improvement over the naive baseline.
+Ridge MAE vs. baseline (always predicting the mean): **€14.8M vs. €17.6M**.
+The model is expected to be off by ~€15M on average — a large error in absolute terms,
+but a clear improvement over the naive baseline on a deliberately hard problem.
 
 ## Project Structure
 ```
@@ -49,11 +60,14 @@ src/
   app.py                   Streamlit dashboard (4 tabs)
 notebooks/
   01_eda.ipynb             Exploratory analysis & modeling decisions
+  02_modeling.ipynb        Hyperparameter tuning & model selection (the analysis behind model.py)
 tests/
   test_data_cleaning.py    17 tests on cleaning + pipeline sanity
 data/
   raw/                     Source CSVs + cached FBref HTML snapshot
   processed/               Merged master table
+.github/workflows/
+  ci.yml                   CI: pytest + Great Expectations gate on every push
 ```
 
 ## Setup & Reproducibility
@@ -87,8 +101,12 @@ Python 3.10+ · pandas · scikit-learn · Great Expectations · Streamlit · Plo
   refresh instructions.
 * **Log-transformed target.** Raw market value has skew ≈ 2.6 (Haaland tail); log1p
   reduces skew to ≈ 1.1 and gives a ~40% relative R² improvement.
-* **Honest out-of-sample reporting.** All R²/MAE values come from a held-out 20% test
-  set, not in-sample fits. "Undervalued" rankings are computed on test rows only.
+* **Honest out-of-sample reporting.** R²/MAE come from a held-out 20% test set that is
+  never seen during hyperparameter tuning. "Undervalued" rankings and league premia use
+  out-of-fold predictions (`cross_val_predict`), so every player is scored by a model
+  that never trained on them. One caveat stated openly: with alpha ≈ 30, predictions are
+  shrunk toward the mean, so median premia skew slightly negative — the *ordering* of
+  leagues is the claim, not absolute premium levels.
 * **Selection bias is acknowledged.** Sample is the top-500 most-valuable players, so
   the model learns to discriminate *among* expensive players — not to identify expensive
   players from nothing.

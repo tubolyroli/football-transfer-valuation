@@ -9,4 +9,5 @@ plotly==6.7.0
 unidecode==1.4.0
 matplotlib==3.10.8
 seaborn==0.13.2
+statsmodels==0.14.6
 pytest==9.0.3
