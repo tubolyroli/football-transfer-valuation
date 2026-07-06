@@ -3,10 +3,11 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from sklearn.base import clone
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_error, r2_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GridSearchCV, cross_val_predict, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
@@ -16,6 +17,7 @@ NUMERIC_FEATURES = [
 ]
 CATEGORICAL_FEATURES = ["position_primary", "league"]
 TARGET = "value_eur"
+ALPHA_GRID = np.logspace(-2, 3, 11)
 
 st.set_page_config(page_title="Football Transfer Valuation", page_icon="⚽", layout="wide")
 
@@ -36,11 +38,13 @@ def build_pipeline():
             ("cat", OneHotEncoder(handle_unknown="ignore"), CATEGORICAL_FEATURES),
         ]
     )
-    return Pipeline([("pre", pre), ("model", Ridge(alpha=1.0))])
+    return Pipeline([("pre", pre), ("model", Ridge())])
 
 
 @st.cache_data
 def train_and_predict(df: pd.DataFrame):
+    """Tune alpha on the training split, score on the test split, and attach
+    out-of-fold predictions so every displayed ranking is out-of-sample."""
     X = df[NUMERIC_FEATURES + CATEGORICAL_FEATURES]
     y_log = df["log_value"]
     y_raw = df[TARGET]
@@ -49,18 +53,21 @@ def train_and_predict(df: pd.DataFrame):
         X, y_log, y_raw, test_size=0.2, random_state=42
     )
 
-    pipe = build_pipeline()
-    pipe.fit(X_train, y_train_log)
+    search = GridSearchCV(build_pipeline(), {"model__alpha": ALPHA_GRID}, cv=5, scoring="r2")
+    search.fit(X_train, y_train_log)
+    pipe = search.best_estimator_
+    best_alpha = search.best_params_["model__alpha"]
 
     test_pred = np.expm1(pipe.predict(X_test))
     r2 = r2_score(y_test_raw, test_pred)
     mae = mean_absolute_error(y_test_raw, test_pred)
 
+    # Out-of-fold predictions: each player is scored by a fold that never trained on them.
+    oof_log = cross_val_predict(clone(pipe), X, y_log, cv=5)
     df = df.copy()
-    df["predicted_value"] = np.expm1(pipe.predict(X))
+    df["predicted_value"] = np.expm1(oof_log)
     df["difference"] = df["predicted_value"] - df[TARGET]
     df["residual"] = df[TARGET] - df["predicted_value"]
-    df["is_test"] = df.index.isin(X_test.index)
 
     # Feature importance: standardized coefficients from the linear model.
     ohe = pipe.named_steps["pre"].named_transformers_["cat"]
@@ -70,7 +77,7 @@ def train_and_predict(df: pd.DataFrame):
     importance["abs"] = importance["coefficient"].abs()
     importance = importance.sort_values("abs", ascending=True)
 
-    return df, r2, mae, importance
+    return df, r2, mae, importance, best_alpha
 
 
 df = load_data()
@@ -92,7 +99,7 @@ if len(df_view) < 20:
     st.warning("Not enough players match the filters to train a model. Loosen the filters.")
     st.stop()
 
-scored, r2, mae, importance = train_and_predict(df_view)
+scored, r2, mae, importance, best_alpha = train_and_predict(df_view)
 
 # Header + headline metrics
 st.title("⚽ Football Transfer Valuation Model")
@@ -122,10 +129,14 @@ with tab1:
     max_val = float(scored[["value_eur", "predicted_value"]].max().max())
     fig.add_shape(type="line", x0=0, y0=0, x1=max_val, y1=max_val,
                   line=dict(color="green", dash="dash"))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
-    st.subheader("💎 Top 10 Undervalued (Out-of-Sample Only)")
-    undervalued = scored[scored["is_test"]].sort_values("difference", ascending=False).head(10)
+    st.subheader("💎 Top 10 Undervalued (Out-of-Fold Predictions)")
+    st.caption(
+        "Every player's prediction comes from a cross-validation fold that never saw them "
+        "in training, so the whole table is out-of-sample — not just a 20% test slice."
+    )
+    undervalued = scored.sort_values("difference", ascending=False).head(10)
     st.dataframe(
         undervalued[["player_name", "age", "team", "league",
                      "value_eur", "predicted_value", "difference"]]
@@ -147,7 +158,7 @@ with tab2:
         labels={"predicted_value": "Predicted (€)", "residual": "Residual (€)"},
     )
     fig.add_hline(y=0, line_dash="dash", line_color="black")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 with tab3:
     st.subheader("League Price Premium")
@@ -174,7 +185,7 @@ with tab3:
         title="Are league players priced above or below their stats?",
     )
     fig.add_hline(y=0, line_dash="dash", line_color="black")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     st.dataframe(
         league_summary.style.format({
             "median_value": "€{:,.0f}",
@@ -195,7 +206,7 @@ with tab4:
         marker=dict(color=importance["coefficient"], colorscale="RdBu", cmid=0),
     ))
     fig.update_layout(height=600, xaxis_title="Coefficient (log-€ units)")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 st.markdown("### 📝 Methodology")
 st.markdown(
@@ -203,7 +214,10 @@ st.markdown(
 - **Target:** `log1p(value_eur)` — raw market value is right-skewed (raw skew ≈ 2.6, log ≈ 1.1).
 - **Numeric features:** {', '.join(NUMERIC_FEATURES)} (standardized).
 - **Categorical features:** {', '.join(CATEGORICAL_FEATURES)} (one-hot encoded).
-- **Validation:** 80/20 train/test split, fixed `random_state=42`. R² and MAE reported on the held-out 20% only.
+- **Tuning:** Ridge `alpha` selected by 5-fold `GridSearchCV` on the training split only
+  (log-spaced grid 10⁻²–10³; chosen for the current filter: `alpha = {best_alpha:g}`).
+- **Validation:** 80/20 train/test split, fixed `random_state=42`. R² and MAE reported on the
+  held-out 20% only. Rankings and league premiums use out-of-fold (`cross_val_predict`) predictions.
 - **Limitations:** No contract length, no commercial/marketing value, no transfermarkt-specific market sentiment. Sample is the top-500 most valuable players only — selection bias toward expensive players.
 """
 )
