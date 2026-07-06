@@ -1,6 +1,7 @@
 # Football Transfer Market Valuation
 
 [![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://football-transfer-valuation.streamlit.app)
+[![CI](https://github.com/tubolyroli/football-transfer-valuation/actions/workflows/ci.yml/badge.svg)](https://github.com/tubolyroli/football-transfer-valuation/actions/workflows/ci.yml)
 
 🔗 **Live demo:** https://football-transfer-valuation.streamlit.app
 
