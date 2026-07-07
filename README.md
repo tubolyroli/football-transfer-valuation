@@ -4,10 +4,14 @@
 [![CI](https://github.com/tubolyroli/football-transfer-valuation/actions/workflows/ci.yml/badge.svg)](https://github.com/tubolyroli/football-transfer-valuation/actions/workflows/ci.yml)
 
 🔗 **Live demo:** https://football-transfer-valuation.streamlit.app
+*(Hosted on Streamlit Community Cloud's free tier — if the app has gone to sleep, the
+first visit shows a wake-up screen and takes about a minute to load.)*
 
 An end-to-end data science pipeline that estimates the "fair market value" of European
 footballers by combining performance stats (FBref) with market valuations
 (Transfermarkt), then surfaces under-/over-valued players via an interactive dashboard.
+
+![Dashboard: out-of-fold predictions and top undervalued players](docs/dashboard.png)
 
 ## What this project demonstrates
 * **Data engineering:** Multi-source ingestion, fuzzy name matching with diacritic
