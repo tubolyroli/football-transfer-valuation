@@ -1,4 +1,4 @@
-# Football Transfer Market Valuation
+# Football Transfer Valuation
 
 [![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://football-transfer-valuation.streamlit.app)
 [![CI](https://github.com/tubolyroli/football-transfer-valuation/actions/workflows/ci.yml/badge.svg)](https://github.com/tubolyroli/football-transfer-valuation/actions/workflows/ci.yml)
@@ -10,6 +10,11 @@ first visit shows a wake-up screen and takes about a minute to load.)*
 An end-to-end data science pipeline that estimates the "fair market value" of European
 footballers by combining performance stats (FBref) with market valuations
 (Transfermarkt), then surfaces under-/over-valued players via an interactive dashboard.
+The domain question extends my BSc thesis, a Blinder–Oaxaca decomposition of the
+"Premier League premium" in transfer fees — this project attacks the same market with ML.
+
+**Headline:** tuned Ridge reaches **€14.8M held-out MAE vs €17.6M** for the
+mean-prediction baseline — beating RandomForest and GradientBoosting on the same hold-out.
 
 ![Dashboard: out-of-fold predictions and top undervalued players](docs/dashboard.png)
 
