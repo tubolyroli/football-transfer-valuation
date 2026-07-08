@@ -11,6 +11,8 @@ from sklearn.model_selection import GridSearchCV, cross_val_predict, train_test_
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+from formatting import fmt_eur
+
 NUMERIC_FEATURES = [
     "age_clean", "goals", "assists", "xg", "Expected_xAG",
     "Progression_PrgC", "Playing Time_Min",
@@ -18,6 +20,41 @@ NUMERIC_FEATURES = [
 CATEGORICAL_FEATURES = ["position_primary", "league"]
 TARGET = "value_eur"
 ALPHA_GRID = np.logspace(-2, 3, 11)
+
+REPO_URL = "https://github.com/tubolyroli/football-transfer-valuation"
+
+# Display names for FBref's prefixed league strings. The model keeps the raw
+# values — only what the user sees is relabeled.
+LEAGUE_LABELS = {
+    "de Bundesliga": "Bundesliga",
+    "eng Premier League": "Premier League",
+    "es La Liga": "La Liga",
+    "fr Ligue 1": "Ligue 1",
+    "it Serie A": "Serie A",
+}
+FEATURE_LABELS = {
+    "age_clean": "Age",
+    "goals": "Goals",
+    "assists": "Assists",
+    "xg": "xG",
+    "Expected_xAG": "xAG",
+    "Progression_PrgC": "Progressive carries",
+    "Playing Time_Min": "Minutes played",
+}
+
+# Colors follow the entity, not the filter order: each league keeps its slot
+# even when others are filtered out. Palette validated for CVD (all pairs).
+LEAGUE_COLORS = {
+    "Bundesliga": "#2a78d6",
+    "La Liga": "#1baf7a",
+    "Ligue 1": "#eda100",
+    "Premier League": "#008300",
+    "Serie A": "#4a3aa7",
+}
+LEAGUE_ORDER = list(LEAGUE_COLORS)
+BLUE, RED, MUTED = "#2a78d6", "#e34948", "#898781"
+# Diverging: red = overpriced, gray = fairly priced, blue = undervalued.
+DIVERGING_SCALE = [(0.0, RED), (0.5, "#f0efec"), (1.0, BLUE)]
 
 st.set_page_config(page_title="Football Transfer Valuation", page_icon="⚽", layout="wide")
 
@@ -28,6 +65,7 @@ def load_data():
     df["age_clean"] = df["age"].astype(str).str.split("-").str[0].astype(int)
     df["position_primary"] = df["position"].astype(str).str.split(",").str[0]
     df["log_value"] = np.log1p(df[TARGET])
+    df["league_display"] = df["league"].map(LEAGUE_LABELS).fillna(df["league"])
     return df
 
 
@@ -39,6 +77,18 @@ def build_pipeline():
         ]
     )
     return Pipeline([("pre", pre), ("model", Ridge())])
+
+
+def prettify_feature(name: str) -> str:
+    """Human-readable label for a raw or one-hot-encoded feature name."""
+    if name in FEATURE_LABELS:
+        return FEATURE_LABELS[name]
+    if name.startswith("position_primary_"):
+        return "Position: " + name.removeprefix("position_primary_")
+    if name.startswith("league_"):
+        raw = name.removeprefix("league_")
+        return "League: " + LEAGUE_LABELS.get(raw, raw)
+    return name
 
 
 @st.cache_data
@@ -80,6 +130,17 @@ def train_and_predict(df: pd.DataFrame):
     return df, r2, mae, importance, best_alpha
 
 
+def money_axes(fig):
+    fig.update_xaxes(tickprefix="€", tickformat="~s")
+    fig.update_yaxes(tickprefix="€", tickformat="~s")
+    return fig
+
+
+def money_column(label: str) -> "st.column_config.NumberColumn":
+    """Column config for a value already converted to € millions."""
+    return st.column_config.NumberColumn(label, format="€%.1fM")
+
+
 df = load_data()
 
 # Sidebar filters
@@ -88,6 +149,7 @@ selected_leagues = st.sidebar.multiselect(
     "Leagues",
     options=sorted(df["league"].dropna().unique()),
     default=sorted(df["league"].dropna().unique()),
+    format_func=lambda l: LEAGUE_LABELS.get(l, l),
 )
 min_minutes = st.sidebar.slider("Minimum Minutes Played", 0, 3000, 500)
 
@@ -99,7 +161,8 @@ if len(df_view) < 20:
     st.warning("Not enough players match the filters to train a model. Loosen the filters.")
     st.stop()
 
-scored, r2, mae, importance, best_alpha = train_and_predict(df_view)
+with st.spinner(f"Tuning and training Ridge on {len(df_view)} players…"):
+    scored, r2, mae, importance, best_alpha = train_and_predict(df_view)
 
 # Header + headline metrics
 st.title("⚽ Football Transfer Valuation Model")
@@ -107,12 +170,16 @@ st.markdown(
     "Ridge regression on FBref performance stats + position + league predicts "
     "**log(market value)**. Positive *difference* = the model thinks the player is **undervalued**."
 )
+st.caption(
+    f"Data: FBref Big-5 league stats × Transfermarkt top-500 valuations · "
+    f"[Source on GitHub]({REPO_URL})"
+)
 
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Players", len(scored))
-col2.metric("Held-out R²", f"{r2:.2%}")
-col3.metric("Held-out MAE", f"€{mae:,.0f}")
-col4.metric("Top League by N", scored["league"].value_counts().idxmax())
+col2.metric("Held-out R²", f"{r2:.2f}")
+col3.metric("Held-out MAE", fmt_eur(mae))
+col4.metric("Median Market Value", fmt_eur(scored[TARGET].median()))
 
 tab1, tab2, tab3, tab4 = st.tabs(
     ["📊 Predicted vs Actual", "📉 Residuals", "🏆 League Premium", "🔬 Feature Importance"]
@@ -122,14 +189,21 @@ with tab1:
     st.subheader("Actual vs. Predicted Market Value")
     fig = px.scatter(
         scored, x="value_eur", y="predicted_value",
-        hover_data=["player_name", "age", "team", "league"],
-        color="difference", color_continuous_scale="RdBu",
-        labels={"value_eur": "Actual (€)", "predicted_value": "Predicted (€)"},
+        custom_data=["player_name", "team", "league_display"],
+        color="difference", color_continuous_scale=DIVERGING_SCALE,
+        color_continuous_midpoint=0,
+        labels={"value_eur": "Actual market value", "predicted_value": "Model prediction"},
     )
+    fig.update_traces(
+        marker=dict(size=8, line=dict(width=1, color="rgba(11,11,11,0.10)")),
+        hovertemplate="<b>%{customdata[0]}</b> — %{customdata[1]} (%{customdata[2]})"
+                      "<br>Actual €%{x:.3s} · Predicted €%{y:.3s}<extra></extra>",
+    )
+    fig.update_coloraxes(colorbar=dict(title="Δ (pred − actual)", tickprefix="€", tickformat="~s"))
     max_val = float(scored[["value_eur", "predicted_value"]].max().max())
     fig.add_shape(type="line", x0=0, y0=0, x1=max_val, y1=max_val,
-                  line=dict(color="green", dash="dash"))
-    st.plotly_chart(fig, width="stretch")
+                  line=dict(color=MUTED, dash="dash"))
+    st.plotly_chart(money_axes(fig), width="stretch")
 
     st.subheader("💎 Top 10 Undervalued (Out-of-Fold Predictions)")
     st.caption(
@@ -137,12 +211,25 @@ with tab1:
         "in training, so the whole table is out-of-sample — not just a 20% test slice."
     )
     undervalued = scored.sort_values("difference", ascending=False).head(10)
+    table = undervalued[["player_name", "age_clean", "team", "league_display",
+                         "value_eur", "predicted_value", "difference"]].copy()
+    for col in ["value_eur", "predicted_value", "difference"]:
+        table[col] /= 1e6
     st.dataframe(
-        undervalued[["player_name", "age", "team", "league",
-                     "value_eur", "predicted_value", "difference"]]
-        .style.format({"value_eur": "€{:,.0f}",
-                       "predicted_value": "€{:,.0f}",
-                       "difference": "€{:,.0f}"})
+        table,
+        hide_index=True,
+        column_config={
+            "player_name": "Player",
+            "age_clean": st.column_config.NumberColumn("Age", format="%d"),
+            "team": "Team",
+            "league_display": "League",
+            "value_eur": money_column("Actual"),
+            "predicted_value": money_column("Predicted"),
+            "difference": st.column_config.ProgressColumn(
+                "Undervalued by", format="€%.1fM",
+                min_value=0.0, max_value=float(table["difference"].max()),
+            ),
+        },
     )
 
 with tab2:
@@ -153,12 +240,38 @@ with tab2:
     )
     fig = px.scatter(
         scored, x="predicted_value", y="residual",
-        hover_data=["player_name", "league"],
-        color="league",
-        labels={"predicted_value": "Predicted (€)", "residual": "Residual (€)"},
+        custom_data=["player_name", "team"],
+        color="league_display", color_discrete_map=LEAGUE_COLORS,
+        category_orders={"league_display": LEAGUE_ORDER},
+        labels={"predicted_value": "Model prediction", "residual": "Residual",
+                "league_display": "League"},
     )
-    fig.add_hline(y=0, line_dash="dash", line_color="black")
-    st.plotly_chart(fig, width="stretch")
+    fig.update_traces(
+        marker=dict(size=8),
+        hovertemplate="<b>%{customdata[0]}</b> — %{customdata[1]}"
+                      "<br>Predicted €%{x:.3s} · Residual €%{y:.3s}<extra></extra>",
+    )
+    fig.add_hline(y=0, line_dash="dash", line_color=MUTED)
+    st.plotly_chart(money_axes(fig), width="stretch")
+
+    with st.expander("View the underlying data"):
+        resid_table = scored[["player_name", "team", "league_display",
+                              "value_eur", "predicted_value", "residual"]].copy()
+        resid_table = resid_table.sort_values("residual")
+        for col in ["value_eur", "predicted_value", "residual"]:
+            resid_table[col] /= 1e6
+        st.dataframe(
+            resid_table,
+            hide_index=True,
+            column_config={
+                "player_name": "Player",
+                "team": "Team",
+                "league_display": "League",
+                "value_eur": money_column("Actual"),
+                "predicted_value": money_column("Predicted"),
+                "residual": money_column("Residual"),
+            },
+        )
 
 with tab3:
     st.subheader("League Price Premium")
@@ -168,7 +281,7 @@ with tab3:
     )
     league_summary = (
         scored.assign(premium_pct=(scored[TARGET] / scored["predicted_value"] - 1) * 100)
-        .groupby("league")
+        .groupby("league_display")
         .agg(
             n=("player_name", "size"),
             median_value=(TARGET, "median"),
@@ -178,34 +291,53 @@ with tab3:
         .sort_values("median_premium_pct", ascending=False)
         .reset_index()
     )
-    fig = px.bar(
-        league_summary, x="league", y="median_premium_pct",
-        color="median_premium_pct", color_continuous_scale="RdBu_r",
-        labels={"median_premium_pct": "Median premium (%)"},
-        title="Are league players priced above or below their stats?",
+    league_summary["direction"] = np.where(
+        league_summary["median_premium_pct"] >= 0, "Priced above stats", "Priced below stats"
     )
-    fig.add_hline(y=0, line_dash="dash", line_color="black")
+    fig = px.bar(
+        league_summary, x="league_display", y="median_premium_pct",
+        color="direction",
+        color_discrete_map={"Priced above stats": RED, "Priced below stats": BLUE},
+        labels={"median_premium_pct": "Median premium", "league_display": "", "direction": ""},
+    )
+    fig.update_traces(hovertemplate="<b>%{x}</b><br>Median premium %{y:.1f}%<extra></extra>")
+    fig.update_yaxes(ticksuffix="%")
+    fig.update_layout(barcornerradius=4)
+    fig.add_hline(y=0, line_dash="dash", line_color=MUTED)
     st.plotly_chart(fig, width="stretch")
+
+    summary_table = league_summary.drop(columns="direction").copy()
+    for col in ["median_value", "median_predicted"]:
+        summary_table[col] /= 1e6
     st.dataframe(
-        league_summary.style.format({
-            "median_value": "€{:,.0f}",
-            "median_predicted": "€{:,.0f}",
-            "median_premium_pct": "{:.1f}%",
-        })
+        summary_table,
+        hide_index=True,
+        column_config={
+            "league_display": "League",
+            "n": st.column_config.NumberColumn("Players", format="%d"),
+            "median_value": money_column("Median actual"),
+            "median_predicted": money_column("Median predicted"),
+            "median_premium_pct": st.column_config.NumberColumn(
+                "Median premium", format="%.1f%%"
+            ),
+        },
     )
 
 with tab4:
     st.subheader("Standardized Ridge Coefficients")
     st.caption(
         "Numeric features are standardized before fitting, so coefficient magnitudes are directly comparable. "
-        "Categorical (league/position) coefficients are relative to the implicit baseline category."
+        "Categorical (league/position) coefficients are relative to the implicit baseline category. "
+        "Blue raises the predicted value, red lowers it."
     )
     fig = go.Figure(go.Bar(
-        x=importance["coefficient"], y=importance["feature"],
+        x=importance["coefficient"],
+        y=importance["feature"].map(prettify_feature),
         orientation="h",
-        marker=dict(color=importance["coefficient"], colorscale="RdBu", cmid=0),
+        marker=dict(color=np.where(importance["coefficient"] >= 0, BLUE, RED)),
+        hovertemplate="%{y}: %{x:.3f}<extra></extra>",
     ))
-    fig.update_layout(height=600, xaxis_title="Coefficient (log-€ units)")
+    fig.update_layout(height=600, xaxis_title="Coefficient (log-€ units)", barcornerradius=4)
     st.plotly_chart(fig, width="stretch")
 
 st.markdown("### 📝 Methodology")
