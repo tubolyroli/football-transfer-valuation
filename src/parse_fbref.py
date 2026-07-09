@@ -1,6 +1,6 @@
 """Parse the cached FBref 'Big-5 European Leagues' standard stats HTML into a CSV.
 
-We deliberately work from a *manually-downloaded* HTML snapshot stored at
+I deliberately work from a *manually-downloaded* HTML snapshot stored at
 `data/raw/fbref_page.html` rather than scraping live, because:
 
 1. FBref's anti-bot protection (Cloudflare) reliably blocks `requests` and the

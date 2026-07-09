@@ -7,11 +7,11 @@
 *(Hosted on Streamlit Community Cloud's free tier — if the app has gone to sleep, the
 first visit shows a wake-up screen and takes about a minute to load.)*
 
-An end-to-end data science pipeline that estimates the "fair market value" of European
-footballers by combining performance stats (FBref) with market valuations
+An end-to-end data science pipeline that estimates the fair market value of footballers
+in the top 5 European leagues by combining performance stats (FBref) with market valuations
 (Transfermarkt), then surfaces under-/over-valued players via an interactive dashboard.
-The domain question extends my BSc thesis, a Blinder–Oaxaca decomposition of the
-"Premier League premium" in transfer fees — this project attacks the same market with ML.
+The question extends my BSc thesis, a Blinder–Oaxaca decomposition of the
+"Premier League premium" in transfer fees — this project attacks the same problem with ML.
 
 **Headline:** tuned Ridge reaches **€14.8M held-out MAE vs €17.6M** for the
 mean-prediction baseline — beating RandomForest and GradientBoosting on the same hold-out.
@@ -20,14 +20,14 @@ mean-prediction baseline — beating RandomForest and GradientBoosting on the sa
 
 ## What this project demonstrates
 * **Data engineering:** Multi-source ingestion, fuzzy name matching with diacritic
-  normalization (Vinícius Júnior ↔ Vinicius Junior), reproducible pipeline.
+  normalization (Vinícius Júnior --> Vinicius Junior), reproducible pipeline.
 * **Data quality:** Automated Great Expectations checks that gate the pipeline.
-* **Modeling:** Ridge regression on log-transformed prices with categorical encoding;
+* **Modeling:** Ridge regression on log-transformed values with categorical encoding;
   hyperparameters selected by 5-fold `GridSearchCV` on the training split only; three
   model leaderboard (Ridge / RandomForest / GradientBoosting) scored on a held-out test set.
 * **Honest evaluation:** All player rankings use out-of-fold predictions
-  (`cross_val_predict`) — no player is scored by a model that saw them in training.
-* **Analysis:** Quantifies league-level price premia (is there a "Premier League Tax"?)
+  (`cross_val_predict`), so no player is scored by a model that saw them in training.
+* **Analysis:** Quantifies league-level price premium (is there a "Premier League Tax"?)
   via out-of-fold residuals and the model's standardized coefficients.
 * **Communication:** EDA + modeling notebooks with the story, plus a four-tab Streamlit
   dashboard (predictions, residuals, league premium, feature importance).
@@ -47,15 +47,15 @@ come from the untouched 20% hold-out.
 
 Two things worth noticing: cross-validation pushed Ridge's alpha from the default 1.0 to
 **31.6** (at n=405, variance is the dominant error source, so heavy shrinkage wins), and
-both tree ensembles chose their most *conservative* grid corner — yet still lose. This is
-the bias-variance trade-off made empirical: a linear inductive bias matches the weak,
+both tree ensembles chose their most *conservative* grid corner, and they still lose. This is
+the bias-variance trade-off empirically: a linear inductive bias matches the weak,
 roughly linear signal better than trees hunting for interactions 324 training rows can't
-support.
+support sufficiently.
 
 ## Model Card
 
 Ridge MAE vs. baseline (always predicting the mean): **€14.8M vs. €17.6M**.
-The model is expected to be off by ~€15M on average — a large error in absolute terms,
+The model is expected to be off by ~€15M on average: this a large error in absolute terms,
 but a clear improvement over the naive baseline on a deliberately hard problem.
 
 ## Project Structure
@@ -72,9 +72,7 @@ notebooks/
   02_modeling.ipynb        Hyperparameter tuning & model selection (the analysis behind model.py)
 tests/
   test_data_cleaning.py    17 tests on cleaning + pipeline sanity
-data/
-  raw/                     Source CSVs + cached FBref HTML snapshot
-  processed/               Merged master table
+data/processed/            Merged master table        
 .github/workflows/
   ci.yml                   CI: pytest + Great Expectations gate on every push
 ```
@@ -108,10 +106,10 @@ Python 3.10+ · pandas · scikit-learn · Great Expectations · Streamlit · Plo
 * **Cached FBref HTML.** FBref aggressively blocks scrapers; the raw HTML is treated as
   a versioned input artifact rather than scraped live. See `src/parse_fbref.py` for
   refresh instructions.
-* **Log-transformed target.** Raw market value has skew ≈ 2.6 (Haaland tail); log1p
-  reduces skew to ≈ 1.1 and gives a ~40% relative R² improvement.
+* **Log-transformed target.** Raw market value has skew ≈ 2.6; log1p reduces skew
+  to ≈ 1.1 and gives a ~40% relative R² improvement.
 * **Honest out-of-sample reporting.** R²/MAE come from a held-out 20% test set that is
-  never seen during hyperparameter tuning. "Undervalued" rankings and league premia use
+  never seen during hyperparameter tuning. Undervalued rankings and league premium use
   out-of-fold predictions (`cross_val_predict`), so every player is scored by a model
   that never trained on them. One caveat stated openly: with alpha ≈ 30, predictions are
   shrunk toward the mean, so median premia skew slightly negative — the *ordering* of
